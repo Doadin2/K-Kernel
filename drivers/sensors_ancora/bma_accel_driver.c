@@ -252,6 +252,7 @@ static const struct file_operations bma_fops = {
 	.unlocked_ioctl = bma_acc_ioctl,
 };
 
+
 static struct bma_acc_private_data *bma_acc_private_data = NULL;
 static struct bma_acc_private_data *bma_acc_get_data(void) {return bma_acc_private_data;}
 static void bma_acc_set_data(struct bma_acc_private_data *data) {bma_acc_private_data = data;}
@@ -433,9 +434,9 @@ static int bma_acc_set_enable(struct bma_acc_driver *driver, int enable)
     if (bma_acc_ischg_enable(driver, enable)) {
         if (enable) {
             driver->set_enable(enable);
-           // schedule_delayed_work(&data->work, delay_to_jiffies(delay) + 1);
+            schedule_delayed_work(&data->work, delay_to_jiffies(delay) + 1);
         } else {
-          //  cancel_delayed_work_sync(&data->work);
+            cancel_delayed_work_sync(&data->work);
             driver->set_enable(enable);
         }
     }
@@ -455,9 +456,9 @@ static int bma_acc_set_delay(struct bma_acc_driver *driver, int delay)
     delay = delay / 1000000; // [HSS]Convert from ns to ms
 
     if (driver->get_enable()) {
-      //  cancel_delayed_work_sync(&data->work);
+        cancel_delayed_work_sync(&data->work);
         driver->set_delay(actual_delay(delay));
-       // schedule_delayed_work(&data->work, delay_to_jiffies(delay) + 1);
+        schedule_delayed_work(&data->work, delay_to_jiffies(delay) + 1);
     } else {
         driver->set_delay(actual_delay(delay));
     }
@@ -564,10 +565,15 @@ static int bma_acc_input_init(struct bma_acc_private_data *data)
     if (!dev) {
         return -ENOMEM;
     }
-    dev->name = "accelerometer";
+    dev->name = "accelerometer_sensor";
     dev->id.bustype = BUS_I2C;
 
     input_set_capability(dev, EV_ABS, ABS_MISC);
+    input_set_capability(dev, EV_ABS, ABS_X);
+    input_set_capability(dev, EV_ABS, ABS_Y);
+    input_set_capability(dev, EV_ABS, ABS_Z);
+
+    input_set_abs_params(dev, ABS_MISC, 0, (1<<31), 0, 0);
     input_set_abs_params(dev, ABS_X, ABSMIN_2G, ABSMAX_2G, 0, 0);
     input_set_abs_params(dev, ABS_Y, ABSMIN_2G, ABSMAX_2G, 0, 0);
     input_set_abs_params(dev, ABS_Z, ABSMIN_2G, ABSMAX_2G, 0, 0);
@@ -582,6 +588,7 @@ static int bma_acc_input_init(struct bma_acc_private_data *data)
 
     return 0;
 }
+
 static int bma_acc_misc_init(struct bma_acc_private_data *data)
 {
 	struct miscdevice *dev= &(data->bma_acc_device);
@@ -778,7 +785,7 @@ static ssize_t bma_acc_private_data_show(struct device *dev,
     struct bma_acc_data accel;
 	
     mutex_lock(&data->data_mutex);
-    bma_acc_measure(data->driver, &accel);
+    accel = data->last;
     mutex_unlock(&data->data_mutex);
 
     return sprintf(buf, "%d %d %d\n", accel.raw.v[0], accel.raw.v[1], accel.raw.v[2]);
@@ -1002,7 +1009,7 @@ static void bma_acc_work_func(struct work_struct *work)
                                               struct bma_acc_private_data, work);
     struct bma_acc_data accel;
     unsigned long delay = delay_to_jiffies(bma_acc_get_delay(data->driver));
-	printk("[diony] bma_acc_work_func.\n");
+
     accel.xyz.v[0] = accel.xyz.v[1] = accel.xyz.v[2] = 0;
     bma_acc_measure(data->driver, &accel);
 
@@ -1015,7 +1022,7 @@ static void bma_acc_work_func(struct work_struct *work)
     data->last = accel;
     mutex_unlock(&data->data_mutex);
 
-   // schedule_delayed_work(&data->work, delay);
+    schedule_delayed_work(&data->work, delay);
 }
 
 static int bma_acc_probe(struct i2c_client *client, const struct i2c_device_id *id)
@@ -1049,12 +1056,12 @@ static int bma_acc_probe(struct i2c_client *client, const struct i2c_device_id *
     }
 
     /* Setup driver interface */
-    //INIT_DELAYED_WORK(&data->work, bma_acc_work_func);
+    INIT_DELAYED_WORK(&data->work, bma_acc_work_func);
 
 
 	
 
-	/* Setup input device interface */
+    /* Setup input device interface */
     err = bma_acc_input_init(data);
     if (err < 0) {
         goto ERR3;
@@ -1065,8 +1072,9 @@ static int bma_acc_probe(struct i2c_client *client, const struct i2c_device_id *
     if (err < 0) {
         goto ERR4;
     }
-   /* Sensor HAL expects to find /dev/accelerometer */
-   err = bma_acc_misc_init(data);
+
+    /* Sensor(AKM8975) HAL(Libakm) expects to find /dev/accelerometer */
+    err = bma_acc_misc_init(data);
     if (err < 0) {
         goto ERR5;
     }	
@@ -1109,7 +1117,7 @@ static int bma_acc_suspend(struct i2c_client *client, pm_message_t mesg)
     if (data->suspend == 0) {
         data->suspend_enable = bma_acc_get_enable(driver);
         if (data->suspend_enable) {
-         //   cancel_delayed_work_sync(&data->work);
+            cancel_delayed_work_sync(&data->work);
             bma_acc_set_enable(driver, 0);
         }
     }
@@ -1131,7 +1139,7 @@ static int bma_acc_resume(struct i2c_client *client)
     if (data->suspend == 1) {
         if (data->suspend_enable) {
             delay = bma_acc_get_delay(driver);
-           // schedule_delayed_work(&data->work, delay_to_jiffies(delay) + 1);
+            schedule_delayed_work(&data->work, delay_to_jiffies(delay) + 1);
             bma_acc_set_enable(driver, 1);
         }
     }
@@ -1151,7 +1159,7 @@ MODULE_DEVICE_TABLE(i2c, bma_acc_id);
 
 struct i2c_driver bma_acc_driver = {
     .driver = {
-        .name = "accelerometer",
+        .name = BMA_ACC_KERNEL_NAME,
         .owner = THIS_MODULE,
     },
     .probe = bma_acc_probe,
